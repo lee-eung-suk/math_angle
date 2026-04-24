@@ -79,8 +79,6 @@ const generatePolys = (n: number) => {
   return pts;
 };
 
-const GATHERED_CENTER = { x: 400, y: 300 };
-
 export default function App() {
   const [mode, setMode] = useState<'triangle' | 'quad' | 'free'>('triangle');
   const [points, setPoints] = useState<Point[]>(DEFAULT_TRIANGLE);
@@ -179,30 +177,56 @@ export default function App() {
     data.forEach((d, i) => {
       if (i === data.length - 1) {
         d.displayDeg = Math.round((expectedSum - currentSum) * 10) / 10;
-        // Optionally correct visual diff so it closes perfectly:
-        // d.diff = d.displayDeg * (Math.PI / 180);
       } else {
         d.displayDeg = Math.round(d.deg * 10) / 10;
-        currentSum += d.displayDeg;
+      }
+      // Guarantee flawless connection
+      d.diff = d.displayDeg * (Math.PI / 180);
+      currentSum += d.displayDeg;
+    });
+
+    let currentAccTenths = 0;
+    const chunks: any[] = [];
+    const numCircles = Math.max(1, Math.ceil(expectedSum / 360));
+
+    data.forEach((d, i) => {
+      let tenthsRemaining = Math.round(d.displayDeg * 10);
+      let localStartTenths = 0;
+
+      while (tenthsRemaining > 0) {
+        const c = Math.floor(currentAccTenths / 3600);
+        const currentModTenths = currentAccTenths % 3600;
+        const tenthsInCurrentCircle = Math.min(tenthsRemaining, 3600 - currentModTenths);
+
+        const chunkDeg = tenthsInCurrentCircle / 10;
+        const localStartDeg = localStartTenths / 10;
+        const gatheredRotDeg = (currentModTenths / 10) + (mode === 'triangle' ? 180 : 0);
+
+        chunks.push({
+          id: `${d.id}-chunk-${chunks.length}`,
+          vertexId: d.id,
+          x: d.x,
+          y: d.y,
+          color: COLORS[i % COLORS.length],
+          c: c,
+          chunkDeg: chunkDeg,
+          chunkDiff: chunkDeg * (Math.PI / 180),
+          localStart: localStartDeg * (Math.PI / 180),
+          localEnd: (localStartDeg + chunkDeg) * (Math.PI / 180),
+          gatheredRot: gatheredRotDeg * (Math.PI / 180),
+          vertexRot: d.startAngle + localStartDeg * (Math.PI / 180)
+        });
+
+        currentAccTenths += tenthsInCurrentCircle;
+        localStartTenths += tenthsInCurrentCircle;
+        tenthsRemaining -= tenthsInCurrentCircle;
       }
     });
+
     totalSum = expectedSum;
 
-    return { data, totalSum, area };
+    return { data, chunks, totalSum, numCircles, area };
   }, [points]);
-
-  const gatheredState = useMemo(() => {
-    const state: Record<string, { rot: number; acc: number }> = {};
-    let currentAcc = mode === 'triangle' ? Math.PI : 0; 
-    anglesData.data.forEach((d) => {
-      state[d.id] = {
-        rot: currentAcc - d.startAngle,
-        acc: currentAcc,
-      };
-      currentAcc += d.diff;
-    });
-    return state;
-  }, [anglesData, mode]); 
 
   const handleDownload = async () => {
     if (containerRef.current) {
@@ -217,6 +241,18 @@ export default function App() {
         console.error("Screenshot failed:", err);
       }
     }
+  };
+
+  const GATHERED_CENTER = { x: 400, y: 300 };
+  const layoutScale = anglesData.numCircles > 2 ? 1.2 : 1.6;
+  const layoutSpacing = anglesData.numCircles > 2 ? 140 : 220;
+  
+  const getCircleCenter = (c: number) => ({ x: GATHERED_CENTER.x + (c - (anglesData.numCircles - 1) / 2) * layoutSpacing, y: GATHERED_CENTER.y - 40 });
+
+  const getCircleLabel = (c: number, circleDeg: number) => {
+    if (anglesData.numCircles === 1 && circleDeg === 180) return '반원 (180°)';
+    if (circleDeg === 360) return `${c + 1}바퀴 (360°)`;
+    return `남은 각 (${circleDeg}°)`;
   };
 
   const polygonPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + ' Z';
@@ -251,7 +287,7 @@ export default function App() {
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Sidebar Controls */}
-        <aside className={`w-full md:w-72 border-b md:border-b-0 md:border-r p-4 md:p-6 flex flex-col space-y-4 md:space-y-6 shrink-0 overflow-y-auto transition-colors z-10 ${isDark ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white/50 border-slate-200'}`}>
+        <aside className={`hidden md:flex w-72 border-b md:border-b-0 md:border-r p-4 md:p-6 flex-col space-y-4 md:space-y-6 shrink-0 overflow-y-auto transition-colors z-10 ${isDark ? 'bg-zinc-900/50 border-zinc-800' : 'bg-white/50 border-slate-200'}`}>
           <div className={`rounded-2xl p-5 md:p-6 shadow-sm border transition-colors ${isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-slate-200'}`}>
             <p className={`text-xs font-bold uppercase tracking-widest mb-2 ${isDark ? 'text-zinc-500' : 'text-slate-400'}`}>내각의 크기의 합</p>
             <motion.h2 
@@ -303,11 +339,25 @@ export default function App() {
 
         {/* Main Simulation Area */}
         <main ref={containerRef} className={`flex-1 relative transition-colors duration-500 [background-size:24px_24px] ${isDark ? 'bg-[radial-gradient(#27272a_1px,transparent_1px)]' : 'bg-[radial-gradient(#cbd5e1_1px,transparent_1px)]'}`}>
+          
+          {/* Mobile Top Header */}
+          <div data-html2canvas-ignore className={`md:hidden absolute top-4 left-4 p-4 rounded-2xl shadow-sm border backdrop-blur-md z-10 transition-colors ${isDark ? 'bg-zinc-900/80 border-zinc-700/50' : 'bg-white/80 border-white/40'}`}>
+            <p className={`text-[10px] font-bold uppercase tracking-widest leading-none mb-1 ${isDark ? 'text-zinc-500' : 'text-slate-400'}`}>내각의 합</p>
+            <motion.div 
+              key={Math.round(anglesData.totalSum)} 
+              initial={{ scale: 1.1, color: '#3b82f6' }} 
+              animate={{ scale: 1, color: isDark ? '#f4f4f5' : '#0f172a' }}
+              className="text-3xl font-black tabular-nums leading-none"
+            >
+              {Math.round(anglesData.totalSum)}<span className="text-blue-500 text-2xl">°</span>
+            </motion.div>
+          </div>
+
           {/* Interaction Hint */}
-          <div data-html2canvas-ignore className={`absolute top-4 md:top-8 right-4 md:right-8 p-3 md:p-4 rounded-xl border shadow-sm backdrop-blur-md z-10 transition-colors ${isDark ? 'bg-zinc-900/80 border-zinc-700/50' : 'bg-white/80 border-white/40'}`}>
-             <div className="flex items-center space-x-2 md:space-x-3">
-                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
-                <p className={`text-xs md:text-sm font-medium ${isDark ? 'text-zinc-300' : 'text-slate-600'}`}>점을 드래그하여 도형을 바꿔보세요</p>
+          <div data-html2canvas-ignore className={`max-w-[180px] sm:max-w-none text-right sm:text-left absolute top-4 md:top-8 right-4 md:right-8 p-3 md:p-4 rounded-xl border shadow-sm backdrop-blur-md z-10 transition-colors ${isDark ? 'bg-zinc-900/80 border-zinc-700/50' : 'bg-white/80 border-white/40'}`}>
+             <div className="flex items-center justify-end sm:justify-start space-x-2 md:space-x-3 gap-y-1 flex-wrap">
+                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse hidden sm:block"></div>
+                <p className={`text-[11px] sm:text-xs md:text-sm font-medium leading-tight ${isDark ? 'text-zinc-300' : 'text-slate-600'}`}>점을 드래그하여 도형을 바꿔보세요</p>
              </div>
           </div>
 
@@ -332,113 +382,228 @@ export default function App() {
                   transition={{ duration: 0.5 }}
                 />
 
+                {/* Circle Backgrounds when Gathered */}
                 <AnimatePresence>
-                  {isGathered && mode === 'triangle' && (
-                    <motion.line
-                      x1={GATHERED_CENTER.x - 120}
-                      y1={GATHERED_CENTER.y}
-                      x2={GATHERED_CENTER.x + 120}
-                      y2={GATHERED_CENTER.y}
-                      stroke={isDark ? '#52525b' : '#cbd5e1'}
-                      strokeWidth="3"
-                      strokeDasharray="6 6"
-                      strokeLinecap="round"
-                      initial={{ opacity: 0, pathLength: 0 }}
-                      animate={{ opacity: 1, pathLength: 1 }}
-                      exit={{ opacity: 0, pathLength: 0 }}
-                      transition={{ duration: 0.6 }}
-                      className="drop-shadow-sm"
-                    />
-                  )}
+                  {isGathered && Array.from({ length: anglesData.numCircles }).map((_, c) => {
+                    const cCenter = getCircleCenter(c);
+                    const circleDeg = (c === anglesData.numCircles - 1 && anglesData.totalSum % 360 !== 0) ? anglesData.totalSum % 360 : 360;
+                    const r = 50 * layoutScale;
+                    
+                    return (
+                      <motion.g key={`circle-bg-${c}`}
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        transition={{ delay: c * 0.15, type: 'spring', bounce: 0.2 }}
+                      >
+                         {mode === 'triangle' ? (
+                           <>
+                             <path
+                               d={`M ${cCenter.x - r} ${cCenter.y} A ${r} ${r} 0 0 1 ${cCenter.x + r} ${cCenter.y}`}
+                               fill={isDark ? "rgba(255,255,255,0.06)" : "rgba(59,130,246,0.06)"}
+                               stroke={isDark ? "rgba(96,165,250,0.8)" : "rgba(59,130,246,0.5)"}
+                               strokeWidth="2"
+                               strokeDasharray="4 4"
+                               className="drop-shadow-[0_0_8px_rgba(59,130,246,0.4)]"
+                             />
+                             <line
+                               x1={cCenter.x - r - 20} y1={cCenter.y}
+                               x2={cCenter.x + r + 20} y2={cCenter.y}
+                               stroke={isDark ? "rgba(96,165,250,0.6)" : "rgba(59,130,246,0.4)"}
+                               strokeWidth="2"
+                               strokeDasharray="4 4"
+                             />
+                             <circle cx={cCenter.x} cy={cCenter.y} r={4} fill={isDark ? '#e4e4e7' : '#52525b'} />
+                           </>
+                         ) : (
+                           <>
+                            <circle
+                                cx={cCenter.x}
+                                cy={cCenter.y}
+                                r={r}
+                                fill={isDark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.03)"}
+                                stroke={isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)"}
+                                strokeWidth="2"
+                                strokeDasharray="6 6"
+                            />
+                            <circle cx={cCenter.x} cy={cCenter.y} r={4} fill={isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)"} />
+                           </>
+                         )}
+                         <text
+                           x={cCenter.x}
+                           y={mode === 'triangle' ? cCenter.y + 24 : cCenter.y + r + 28}
+                           textAnchor="middle"
+                           fill={isDark ? '#a1a1aa' : '#64748b'}
+                           fontSize="14"
+                           fontWeight="700"
+                           className="select-none"
+                         >
+                           {getCircleLabel(c, circleDeg)}
+                         </text>
+                      </motion.g>
+                    )
+                  })}
                 </AnimatePresence>
 
-                {anglesData.data.map((d, i) => {
+                {anglesData.chunks.map((ck, i) => {
                   const R = 50;
-                  const p1x = R * Math.cos(d.startAngle);
-                  const p1y = R * Math.sin(d.startAngle);
-                  const p2x = R * Math.cos(d.endAngle);
-                  const p2y = R * Math.sin(d.endAngle);
-                  const largeArc = d.diff > Math.PI ? 1 : 0;
-                  const path = `M 0 0 L ${p1x} ${p1y} A ${R} ${R} 0 ${largeArc} 1 ${p2x} ${p2y} Z`;
-
-                  const color = COLORS[i % COLORS.length];
-
+                  const largeArc = ck.chunkDiff > Math.PI ? 1 : 0;
+                  const bx = R * Math.cos(ck.chunkDiff);
+                  const by = R * Math.sin(ck.chunkDiff);
+                  // Basic wedge going from 0 to chunkDiff
+                  const path = `M 0 0 L ${R} 0 A ${R} ${R} 0 ${largeArc} 1 ${bx} ${by} Z`;
+                  const cCenter = getCircleCenter(ck.c);
+                  
                   return (
                     <motion.g
-                      key={`wedge-${d.id}`}
-                      style={{ filter: isGathered ? 'drop-shadow(0px 10px 15px rgba(0,0,0,0.2))' : 'none' }}
+                      key={`wedge-${ck.id}`}
+                      style={{ filter: isGathered ? 'drop-shadow(0px 8px 12px rgba(0,0,0,0.15))' : 'none' }}
                       animate={{
-                        x: isGathered ? GATHERED_CENTER.x : d.x,
-                        y: isGathered ? GATHERED_CENTER.y : d.y,
-                        rotate: isGathered ? gatheredState[d.id]?.rot * (180 / Math.PI) : 0,
-                        scale: isGathered ? (mode === 'triangle' ? 2 : 1.8) : 1
+                        x: isGathered ? cCenter.x : ck.x,
+                        y: isGathered ? cCenter.y : ck.y,
+                        rotate: isGathered ? ck.gatheredRot * (180 / Math.PI) : ck.vertexRot * (180 / Math.PI),
+                        scale: isGathered ? layoutScale : 1
                       }}
-                      transition={{ type: 'spring', bounce: 0.25, duration: 0.9, delay: isGathered ? i * 0.1 : 0 }}
+                      transition={{ type: 'spring', bounce: 0.2, duration: 0.8, delay: isGathered ? ck.c * 0.15 + i * 0.05 : 0 }}
                     >
-                      {/* Bounding box stabilization for accurate 0,0 rotation origin */}
                       <circle cx={0} cy={0} r={R + 8} fill="transparent" stroke="none" />
-                      <path d={path} fill={color} opacity={0.35} />
-                      <path d={path} fill="none" stroke={color} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+                      <path d={path} fill={ck.color} opacity={0.35} />
+                      <path d={path} fill="none" stroke={ck.color} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
                     </motion.g>
                   );
                 })}
 
+                {/* Point dragging handles */}
                 <AnimatePresence>
                     {points.map((p, i) => {
                     const color = COLORS[i % COLORS.length];  
                     return (
-                    <motion.circle
-                        key={`pt-${p.id}`}
-                        cx={p.x}
-                        cy={p.y}
-                        r={14}
-                        className="cursor-grab active:cursor-grabbing hover:opacity-80"
-                        fill={isDark ? '#fafafa' : '#ffffff'}
-                        stroke={color}
-                        strokeWidth="5"
-                        whileHover={{ scale: 1.2 }}
-                        whileTap={{ scale: 0.9 }}
-                        onPointerDown={(e) => handlePointerDown(p.id, e)}
-                        animate={{ opacity: isGathered ? 0 : 1, scale: draggingId === p.id ? 1.4 : 1 }}
-                        exit={{ opacity: 0, scale: 0 }}
-                        initial={{ opacity: 0, scale: 0 }}
-                        transition={{ duration: 0.2 }}
-                    />
+                    <motion.g
+                      key={`pt-group-${p.id}`}
+                      animate={{ opacity: isGathered ? 0 : 1, scale: draggingId === p.id ? 1.4 : 1 }}
+                      exit={{ opacity: 0, scale: 0 }}
+                      initial={{ opacity: 0, scale: 0 }}
+                      transition={{ duration: 0.2 }}
+                      onPointerDown={(e) => handlePointerDown(p.id, e)}
+                      className="cursor-grab active:cursor-grabbing origin-center"
+                      style={{ transformOrigin: `${p.x}px ${p.y}px` }}
+                    >
+                      <circle
+                          cx={p.x}
+                          cy={p.y}
+                          r={30}
+                          fill="transparent"
+                      />
+                      <circle
+                          cx={p.x}
+                          cy={p.y}
+                          r={14}
+                          className="hover:opacity-80 transition-opacity"
+                          fill={isDark ? '#fafafa' : '#ffffff'}
+                          stroke={color}
+                          strokeWidth="5"
+                      />
+                    </motion.g>
                     )})}
                 </AnimatePresence>
 
+                {/* Angle Text Labels */}
                 {anglesData.data.map((d, i) => {
                   const bisect = d.startAngle + d.diff / 2;
                   
                   let targetAngle = bisect;
-                  let targetX = d.x + Math.cos(targetAngle) * 85;
-                  let targetY = d.y + Math.sin(targetAngle) * 85;
+                  const degStr = d.displayDeg.toString();
+                  const [intPart, decPart] = degStr.includes('.') ? degStr.split('.') : [degStr, null];
 
-                  if (isGathered) {
-                    targetAngle = gatheredState[d.id]?.acc + d.diff / 2;
-                    targetX = GATHERED_CENTER.x + Math.cos(targetAngle) * 85;
-                    targetY = GATHERED_CENTER.y + Math.sin(targetAngle) * 85;
+                  // If angle is small, push label further out so it doesn't crowd the vertex
+                  const isNarrow = d.displayDeg < 35;
+                  const distanceBase = draggingId === d.id ? 110 : (isNarrow ? 90 : 70);
+                  
+                  let targetX = d.x + Math.cos(targetAngle) * distanceBase;
+                  let targetY = d.y + Math.sin(targetAngle) * distanceBase;
+
+                  if (draggingId === d.id) {
+                     targetY -= 25; // Move up significantly for finger visibility on mobile
                   }
 
                   const color = COLORS[i % COLORS.length];
+                  const isDraggingThis = draggingId === d.id;
 
                   return (
                     <motion.g
                       key={`label-${d.id}`}
-                      animate={{ x: targetX, y: targetY }}
-                      transition={{ type: 'spring', bounce: 0.15, duration: 0.8, delay: isGathered ? i * 0.08 : 0 }}
+                      animate={{ 
+                        x: targetX, 
+                        y: targetY, 
+                        opacity: isGathered ? 0 : (draggingId && !isDraggingThis ? 0.3 : 1.0),
+                        scale: isDraggingThis ? 1.3 : 1.0
+                      }}
+                      initial={{ opacity: 1, scale: 1.0 }}
+                      transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
                     >
-                      <motion.text
+                      <text
                         textAnchor="middle"
                         dominantBaseline="middle"
-                        fill={isDark ? color : color}
-                        fontSize={isGathered ? "20" : "18"}
-                        fontWeight="900"
-                        className="select-none pointer-events-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]"
-                        animate={{ opacity: (isGathered && d.diff < 0.2) ? 0 : 1 }}
+                        fill={color}
+                        stroke={isDark ? "rgba(39, 39, 42, 0.9)" : "rgba(255, 255, 255, 0.9)"}
+                        strokeWidth="6"
+                        strokeLinejoin="round"
+                        style={{ paintOrder: 'stroke fill', WebkitFontSmoothing: 'antialiased' }}
+                        fontSize="24"
+                        fontWeight="800"
+                        className="select-none pointer-events-none drop-shadow-sm font-sans tracking-tight"
                       >
-                        {d.displayDeg}°
-                      </motion.text>
+                        {intPart}
+                        {decPart && <tspan fontSize="18">.{decPart}</tspan>}
+                        <tspan fontSize="18" dy="-4">°</tspan>
+                      </text>
+                    </motion.g>
+                  );
+                })}
+                
+                {/* Chunk Labels for gathered mode */}
+                {anglesData.chunks.map((ck, i) => {
+                  if (ck.chunkDeg < 10) return null; // Avoid overlapping extremely narrow slices
+                  const bisect = ck.gatheredRot + ck.chunkDiff / 2;
+                  const cCenter = getCircleCenter(ck.c);
+                  
+                  const degStr = ck.chunkDeg.toString();
+                  const [intPart, decPart] = degStr.includes('.') ? degStr.split('.') : [degStr, null];
+
+                  const isNarrow = ck.chunkDeg < 35;
+                  const distanceBase = 50 * layoutScale + (isNarrow ? 55 : 40);
+
+                  let targetX = cCenter.x + Math.cos(bisect) * distanceBase;
+                  let targetY = cCenter.y + Math.sin(bisect) * distanceBase;
+
+                  return (
+                    <motion.g
+                      key={`chunk-label-${ck.id}`}
+                      animate={{ 
+                        x: targetX, 
+                        y: targetY, 
+                        opacity: isGathered ? 1 : 0,
+                        scale: isGathered ? 1.2 : 0.8
+                      }}
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      transition={{ type: 'spring', bounce: 0.25, duration: 0.6, delay: isGathered ? ck.c * 0.15 + i * 0.05 : 0 }}
+                    >
+                      <text
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        fill={ck.color}
+                        stroke={isDark ? "rgba(39, 39, 42, 0.9)" : "rgba(255, 255, 255, 0.9)"}
+                        strokeWidth="6"
+                        strokeLinejoin="round"
+                        style={{ paintOrder: 'stroke fill', WebkitFontSmoothing: 'antialiased' }}
+                        fontSize="22"
+                        fontWeight="800"
+                        className="select-none pointer-events-none drop-shadow-md font-sans tracking-tight"
+                      >
+                        {intPart}
+                        {decPart && <tspan fontSize="16">.{decPart}</tspan>}
+                        <tspan fontSize="16" dy="-4">°</tspan>
+                      </text>
                     </motion.g>
                   );
                 })}
